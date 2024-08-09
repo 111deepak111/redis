@@ -22,18 +22,20 @@ static void h_insert(HTab *htab, HNode *node)
 static HNode **h_lookup(HTab *htab, HNode *key, bool (*eq)(HNode *, HNode *))
 {
     if (!htab->tab)
-        return nullptr;
-    size_t pos = key->hcode && htab->mask;
-    HNode **from = &htab->tab[pos];
-    for (HNode *cur; (cur = *from) != nullptr; from = &cur->next)
+        return NULL;
+    
+    size_t pos = key->hcode & htab->mask;
+
+    HNode **from = &htab->tab[pos]; //pointer to a linked list pointer
+    for (HNode *cur; (cur = *from) != NULL   ; from = &cur->next) //cur becomes a linked list pointer and from keep pointing to the next node pointer
     {
-        if (cur->hcode == key->hcode && eq(cur, key))
+        if (cur->hcode == key->hcode && eq(cur, key)) //eq is a function pointer which checks whether the keys are equal or not
             return from;
     }
-    return nullptr;
+    return NULL;
 }
 
-static HNode *h_detach(HTab *htab, HNode **from)
+static HNode *h_detach(HTab *htab, HNode **from) //from is a pointer to the linked list pointer
 {
     HNode *node = *from;
     *from = node->next;
@@ -48,10 +50,10 @@ static void hm_help_resizing(HMap *hmap)
     size_t nwork = 0;
     while (nwork < k_resizing_work && hmap->ht2.size > 0)
     {
-        HNode **from = &hmap->ht2.tab[hmap->resizing_pos];
+        HNode **from = &hmap->ht2.tab[hmap->resizing_pos];//pointer to a linked list pointer
         if (!*from)
         {
-            hmap->resizing_pos++;
+            hmap->resizing_pos++; 
             continue;
         }
         h_insert(&hmap->ht1, h_detach(&hmap->ht2, from));
@@ -77,7 +79,7 @@ HNode *hm_lookup(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *))
     hm_help_resizing(hmap);
     HNode **from = h_lookup(&hmap->ht1, key, eq);
     from = from ? from : h_lookup(&hmap->ht2, key, eq);
-    return from ? *from : nullptr;
+    return from ? *from : NULL;
 }
 
 const size_t k_max_load_factor = 8;
@@ -105,7 +107,7 @@ HNode *hm_pop(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *))
         return h_detach(&hmap->ht1, from);
     if (HNode **from = h_lookup(&hmap->ht2, key, eq))
         return h_detach(&hmap->ht2, from);
-    return nullptr;
+    return NULL;
 }
 
 size_t hm_size(HMap *hmap)

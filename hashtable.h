@@ -10,11 +10,12 @@ struct HNode
 
 struct HTab
 {
-    HNode **tab = nullptr;
+    HNode **tab = nullptr; //array of pointers or linked list
     size_t mask = 0;
     size_t size = 0;
 };
 
+//has two hashtables in case one needs resizing
 struct HMap
 {
     HTab ht1;
