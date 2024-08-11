@@ -48,13 +48,23 @@ static AVLNode *rot_left(AVLNode *node){
         newNode->left->parent=node;
     }
     node->right=newNode->left;
-    newNode->right=node;
+    newNode->left=node;
     newNode->parent=node->parent;
     node->parent=newNode;
     avl_update(node);
     avl_update(newNode);
     return newNode;
 }
+
+//             p{parent tree}      p                           p                                p  
+//            /                   /                           /                                /
+//           a                  a         c                  a          c                     c      
+//          / \                  \  +    / \                / \          \                   / \       
+//         c   b   ------>>       b     e   d   ------->>  d   b    +     e  ------->>      a   e
+//        / \                          /                                   \               / \   \        
+//       e   d                        f                                     f             d   b   f         
+//      /
+//     f
 
 static AVLNode *rot_right(AVLNode *node){
     AVLNode* newNode=node->left;
