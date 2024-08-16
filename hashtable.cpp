@@ -23,19 +23,19 @@ static HNode **h_lookup(HTab *htab, HNode *key, bool (*eq)(HNode *, HNode *))
 {
     if (!htab->tab)
         return NULL;
-    
+
     size_t pos = key->hcode & htab->mask;
 
-    HNode **from = &htab->tab[pos]; //pointer to a linked list pointer
-    for (HNode *cur; (cur = *from) != NULL   ; from = &cur->next) //cur becomes a linked list pointer and from keep pointing to the next node pointer
+    HNode **from = &htab->tab[pos];                            // pointer to a linked list pointer
+    for (HNode *cur; (cur = *from) != NULL; from = &cur->next) // cur becomes a linked list pointer and from keep pointing to the next node pointer
     {
-        if (cur->hcode == key->hcode && eq(cur, key)) //eq is a function pointer which checks whether the keys are equal or not
+        if (cur->hcode == key->hcode && eq(cur, key)) // eq is a function pointer which checks whether the keys are equal or not
             return from;
     }
     return NULL;
 }
 
-static HNode *h_detach(HTab *htab, HNode **from) //from is a pointer to the linked list pointer
+static HNode *h_detach(HTab *htab, HNode **from) // from is a pointer to the linked list pointer
 {
     HNode *node = *from;
     *from = node->next;
@@ -50,10 +50,10 @@ static void hm_help_resizing(HMap *hmap)
     size_t nwork = 0;
     while (nwork < k_resizing_work && hmap->ht2.size > 0)
     {
-        HNode **from = &hmap->ht2.tab[hmap->resizing_pos];//pointer to a linked list pointer
+        HNode **from = &hmap->ht2.tab[hmap->resizing_pos]; // pointer to a linked list pointer
         if (!*from)
         {
-            hmap->resizing_pos++; 
+            hmap->resizing_pos++;
             continue;
         }
         h_insert(&hmap->ht1, h_detach(&hmap->ht2, from));
@@ -115,7 +115,7 @@ size_t hm_size(HMap *hmap)
     return hmap->ht1.size + hmap->ht2.size;
 }
 
-void hm_destory(HMap *hmap)
+void hm_destroy(HMap *hmap)
 {
     free(hmap->ht1.tab);
     free(hmap->ht2.tab);

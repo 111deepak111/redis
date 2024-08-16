@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,11 +13,10 @@
 #include <netinet/ip.h>
 #include <string>
 #include <vector>
-#include "hashtable.h"
-#define container_of(ptr, type, member) ({ \
-    const typeof(((type *)0)->member) *__mptr=(ptr);\
-    (type*) ((char *)__mptr - offsetof(type,member)); })
 #include "hashtable.cpp"
+#include "common.h"
+#include "zset.cpp"
+#include "avl.cpp"
 
 static void msg(const char *msg)
 {
@@ -134,23 +134,23 @@ static int32_t parse_req(const uint8_t *data, size_t len, std::vector<std::strin
     return 0;
 }
 
-enum
-{
-    RES_OK = 0,
-    RES_ERR = 1,
-    RES_NX = 2,
-};
-
 static struct
 {
     HMap db;
 } g_data;
+
+enum{
+    T_STR=0,
+    T_ZSET=1,
+};
 
 struct Entry
 {
     struct HNode node;
     std::string key;
     std::string val;
+    uint32_t type=0;
+    ZSet *zset=nullptr;
 };
 
 static bool entry_eq(HNode *lhs, HNode *rhs)
@@ -160,40 +160,11 @@ static bool entry_eq(HNode *lhs, HNode *rhs)
     return le->key == re->key;
 }
 
-static uint64_t str_hash(const uint8_t *data, size_t len)
-{
-    uint32_t h = 0x811C9DC5;
-    for (size_t i = 0; i < len; i++)
-    {
-        h = (h + data[i]) * 0x01000193;
-    }
-    return h;
-}
-
-// static uint32_t do_get(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
-// {
-//     if (!g_map.count(cmd[1]))
-//         return RES_NX;
-//     std::string &val = g_map[cmd[1]];
-//     assert(val.size() <= k_max_msg);
-//     memcpy(res, val.data(), val.size());
-//     *reslen = (uint32_t)val.size();
-//     return RES_OK;
-// }
-
-enum
-{
-    ERR_UNKNOWN = 1,
-    ERR_2BIG = 2,
-};
-
-enum
-{
-    SER_NIL = 0,
-    SER_ERR = 1,
-    SER_STR = 2,
-    SER_INT = 3,
-    SER_ARR = 4,
+enum{
+    ERR_UNKNOWN=1,
+    ERR_2BIG=2,
+    ERR_TYPE=3,
+    ERR_ARG=4,
 };
 
 static void out_nil(std::string &out)
@@ -215,6 +186,11 @@ static void out_int(std::string &out, int64_t val)
     out.append((char *)&val, 8);
 }
 
+static void out_dbl(std::string &out,double val){
+    out.push_back(SER_DBL);
+    out.append((char*)&val,8);
+}
+
 static void out_err(std::string &out, int32_t code, const std::string &msg)
 {
     out.push_back(SER_ERR);
@@ -230,37 +206,44 @@ static void out_arr(std::string &out, uint32_t n)
     out.append((char *)&n, 4);
 }
 
+static void *begin_arr(std::string &out){
+    out.push_back(SER_ARR);
+    out.append("\0\0\0\0",4);
+    return (void*)(out.size()-4);
+}
+
+static void end_arr(std::string &out,void* ctx,uint32_t n){
+    size_t pos=(size_t)ctx;
+    assert(out[pos-1]==SER_ARR);
+    memcpy(&out[pos],&n,4);
+}
+
 static void do_get(std::vector<std::string> &cmd, std::string &out)
 {
     Entry key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
     HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
-    // if (!node)
-    //     return RES_NX;
-    // const std::string &val = container_of(node, Entry, node)->val;
-    // assert(val.size() <= k_max_msg);
-    // memcpy(res, val.data(), val.size());
-    // *reslen = (uint32_t)val.size();
-    // return RES_OK;
     if (!node)
         return out_nil(out);
-    const std::string &val = container_of(node, Entry, node)->val;
-    out_str(out, val);
+    Entry *ent = container_of(node, Entry, node);
+    if(ent->type==T_STR)
+        return out_err(out,ERR_TYPE,"expect string type");
+    return out_str(out, ent->val);
 }
 
 static void do_set(std::vector<std::string> &cmd, std::string &out)
 {
-    // (void)res;
-    // (void)reslen;
-    // g_map[cmd[1]] = cmd[2];
     Entry key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
     HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
     if (node)
     {
-        container_of(node, Entry, node)->val.swap(cmd[2]);
+        Entry *ent=container_of(node, Entry, node);
+        if(ent->type!=T_STR)
+            return out_err(out,ERR_TYPE,"expect string type");
+        ent->val.swap(cmd[2]);
     }
     else
     {
@@ -273,18 +256,25 @@ static void do_set(std::vector<std::string> &cmd, std::string &out)
     return out_nil(out);
 }
 
+static void entry_del(Entry *ent){
+    switch(ent->type){
+        case T_ZSET:
+            zset_dispose(ent->zset);
+            delete ent->zset;
+            break;
+    }
+    delete ent;
+}
+
 static void do_del(std::vector<std::string> &cmd, std::string &out)
 {
-    // (void)res;
-    // (void)reslen;
-    // g_map.erase(cmd[1]);
     Entry key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
     HNode *node = hm_pop(&g_data.db, &key.node, &entry_eq);
     if (node)
     {
-        delete container_of(node, Entry, node);
+        entry_del(container_of(node, Entry, node));
     }
     return out_int(out, node?1:0);
 }
@@ -318,35 +308,121 @@ static void do_keys(std::vector<std::string> &cmd, std::string &out)
     h_scan(&g_data.db.ht2, &cb_scan, &out);
 }
 
+static bool str2dbl(const std::string &s,double &out){
+    char *endp=nullptr;
+    out=strtod(s.c_str(),&endp);
+    return endp==s.c_str()+s.size() && !isnan(out);
+}
+
+static bool str2int(const std::string &s,int64_t &out){
+    char *endp=nullptr;
+    out=strtoll(s.c_str(),&endp,10);
+    return endp==s.c_str()+s.size();
+}
+
+static void do_zadd(std::vector<std::string> &cmd,std::string &out){
+    double score=0;
+    if(!str2dbl(cmd[2],score))
+        return out_err(out,ERR_ARG,"expect fp number");
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode=str_hash((uint8_t*)key.key.data(),key.key.size());
+    HNode *hnode=hm_lookup(&g_data.db,&key.node,&entry_eq);
+
+    Entry *ent=nullptr;
+    if(!hnode){
+        ent = new Entry();
+        ent->key.swap(key.key);
+        ent->node.hcode=key.node.hcode;
+        ent->type=T_ZSET;
+        ent->zset=new ZSet();
+        hm_insert(&g_data.db,&ent->node);
+    }else{
+        ent=container_of(hnode,Entry,node);
+        if(ent->type!=T_ZSET)
+            return out_err(out,ERR_TYPE,"expect Zset");
+    }
+    const std::string &name=cmd[3];
+    bool added=zset_add(ent->zset,name.data(),name.size(),score);
+    return out_int(out,(int64_t)added);
+}
+
+static bool expect_zset(std::string &out,std::string &s,Entry **ent){
+    Entry key;
+    key.key.swap(s);
+    key.node.hcode=str_hash((uint8_t*)key.key.data(),key.key.size());
+    HNode *hnode=hm_lookup(&g_data.db,&key.node,&entry_eq);
+    if(!hnode){
+        out_nil(out);
+        return false;
+    }
+    *ent=container_of(hnode,Entry,node);
+    if((*ent)->type!=T_ZSET){
+        out_err(out,ERR_TYPE,"expect zset");
+        return false;
+    }
+    return true;
+}
+
+static void do_zrem(std::vector<std::string> &cmd,std::string &out){
+    Entry *ent=nullptr;
+    if(!expect_zset(out,cmd[1],&ent))
+        return;
+    const std::string &name=cmd[2];
+    ZNode *znode=zset_pop(ent->zset,name.data(),name.size());
+    if(znode)
+        znode_del(znode);
+    return out_int(out,znode?1:0);
+}
+
+static void do_zscore(std::vector<std::string>&cmd,std::string &out){
+    Entry *ent=nullptr;
+    if(!expect_zset(out,cmd[1],&ent))
+        return;
+    const std::string &name=cmd[2];
+    ZNode *znode=zset_pop(ent->zset,name.data(),name.size());
+    if(znode)
+        znode_del(znode);
+    return out_int(out,znode?1:0);
+}
+
+static void do_zquery(std::vector<std::string>&cmd,std::string &out){
+    double score=0;
+    if(!str2dbl(cmd[2],score))
+        return out_err(out,ERR_ARG,"expect fp number");
+    const std::string &name=cmd[3];
+    int64_t offset=0;
+    int64_t limit=0;
+    if(!str2int(cmd[4],offset))
+        return out_err(out,ERR_ARG,"expect int");
+    if(!str2int(cmd[5],limit))
+        return out_err(out,ERR_ARG,"expect int");
+    Entry *ent=nullptr;
+    if(!expect_zset(out,cmd[1],&ent)){
+        if(out[0]==SER_NIL){
+            out.clear();
+            out_arr(out,0);
+        }
+        return;
+    }
+    if(limit<=0)
+        return out_arr(out,0);
+    ZNode *znode=zset_query(ent->zset,score,name.data(),name.size());
+    znode=znode_offset(znode,offset);
+    void *arr=begin_arr(out);
+    uint32_t n=0;
+    while(znode&&(int64_t)n<limit){
+        out_str(out,znode->name);
+        out_dbl(out,znode->score);
+        n+=2;
+    }
+    end_arr(out,arr,2);
+}
+
 static bool cmd_is(const std::string &word, const char *cmd)
 {
     return 0 == strcasecmp(word.c_str(), cmd);
 }
-
-// static int32_t do_request(const uint8_t *req, uint32_t reqlen, uint32_t *rescode, uint8_t *res, uint32_t *reslen)
-// {
-//     std::vector<std::string> cmd;
-//     if (0 != parse_req(req, reqlen, cmd))
-//     {
-//         msg("bad request");
-//         return -1;
-//     }
-//     if (cmd.size() == 2 && cmd_is(cmd[0], "get"))
-//         *rescode = do_get(cmd, res, reslen);
-//     else if (cmd.size() == 3 && cmd_is(cmd[0], "set"))
-//         *rescode = do_set(cmd, res, reslen);
-//     else if (cmd.size() == 2 && cmd_is(cmd[0], "del"))
-//         *rescode = do_del(cmd, res, reslen);
-//     else
-//     {
-//         *rescode = RES_ERR;
-//         const char *msg = "unknown command";
-//         strcpy((char *)res, msg);
-//         *reslen = strlen(msg);
-//         return 0;
-//     }
-//     return 0;
-// }
 
 static void do_request(std::vector<std::string> &cmd, std::string &out)
 {
@@ -358,6 +434,14 @@ static void do_request(std::vector<std::string> &cmd, std::string &out)
         do_set(cmd, out);
     else if (cmd.size() == 2 && cmd_is(cmd[0], "del"))
         do_del(cmd, out);
+    else if (cmd.size()==4 && cmd_is(cmd[0],"zadd"))
+        do_zadd(cmd,out);
+    else if (cmd.size()==3 && cmd_is(cmd[0],"zrem"))
+        do_zrem(cmd,out);
+    else if(cmd.size()==3&&cmd_is(cmd[0],"zscore"))
+        do_zscore(cmd,out);
+    else if(cmd.size()==6&&cmd_is(cmd[0],"zquery"))
+        do_zquery(cmd,out);
     else
         out_err(out, ERR_UNKNOWN, "Unkown cmd");
 }
@@ -380,8 +464,6 @@ static bool try_one_request(Conn *conn)
     {
         return false;
     }
-    // uint32_t rescode = 0;
-    // uint32_t wlen = 0;
     std::vector<std::string> cmd;
     if (0 != parse_req(&conn->rbuf[4], len, cmd))
     {
@@ -397,11 +479,6 @@ static bool try_one_request(Conn *conn)
         out_err(out, ERR_2BIG, "response is too big");
     }
     uint32_t wlen = (uint32_t)out.size();
-    // printf("Client says:%.*s\n", len, &conn->rbuf[4]);
-    // wlen += 4;
-    // memcpy(&conn->wbuf[0], &len, 4);
-    // memcpy(&conn->wbuf[4], &conn->rbuf[4], len);
-    // conn->wbuf_size = 4 + len;
     memcpy(&conn->wbuf[0], &wlen, 4);
     memcpy(&conn->wbuf[4], out.data(), out.size());
     conn->wbuf_size = 4 + wlen;
@@ -504,87 +581,6 @@ static void connection_io(Conn *conn)
     else
         assert(0);
 }
-// static void do_something(int connfd)
-// {
-//     char rbuff[64];
-//     ssize_t n = read(connfd, rbuff, sizeof(rbuff) - 1);
-
-//     if (n < 0)
-//     {
-//         msg("read() error");
-//         return;
-//     }
-
-//     printf("client says:%s\n", rbuff);
-
-//     char wbuff[] = "World";
-//     write(connfd, wbuff, sizeof(wbuff));
-// }
-
-// static int32_t read_full(int fd, char *buf, size_t n)
-// {
-//     while (n > 0)
-//     {
-//         ssize_t rv = read(fd, buf, n);
-//         if (rv <= 0)
-//             return -1;
-//         assert((size_t)rv <= n);
-//         n -= (size_t)rv;
-//         buf += rv;
-//     }
-//     return 0;
-// }
-
-// static int32_t write_all(int fd, const char *buf, size_t n)
-// {
-//     while (n > 0)
-//     {
-//         ssize_t rv = write(fd, buf, n);
-//         if (rv <= 0)
-//             return -1;
-//         assert((size_t)rv <= n);
-//         n -= (size_t)rv;
-//         buf += rv;
-//     }
-//     return 0;
-// }
-
-// static int32_t one_request(int connfd)
-// {
-//     char rbuf[4 + k_max_msg + 1];
-//     errno = 0;
-//     int32_t err = read_full(connfd, rbuf, 4);
-//     if (err)
-//     {
-//         if (errno == 0)
-//             msg("EOF");
-//         else
-//             msg("read() error");
-//         return err;
-//     }
-//     uint32_t len = 0;
-//     memcpy(&len, rbuf, 4);
-
-//     if (len > k_max_msg)
-//     {
-//         msg("too long");
-//         return -1;
-//     }
-//     err = read_full(connfd, &rbuf[4], len);
-//     if (err)
-//     {
-//         msg("read() error");
-//         return err;
-//     }
-//     rbuf[4 + len] = '\0';
-//     printf("client says:%s\n", &rbuf[4]);
-//     const char reply[] = "World";
-//     char wbuf[4 + sizeof(reply)];
-//     len = (uint32_t)strlen(reply);
-//     memcpy(wbuf, &len, 4);
-//     memcpy(&wbuf[4], &reply, len);
-//     return write_all(connfd, wbuf, 4 + len);
-// }
 
 int main()
 {
@@ -610,24 +606,7 @@ int main()
     std::vector<Conn *> fd2conn;
     fd_set_nb(fd);
     std::vector<struct pollfd> poll_args;
-    // while (true)
-    // {
-    //     struct sockaddr_in client = {};
-    //     socklen_t socklen = sizeof(client);
-
-    //     int connfd = accept(fd, (struct sockaddr *)&client, &socklen);
-    //     if (connfd < 0)
-    //         continue;
-
-    //     while (true)
-    //     {
-    //         int32_t err = one_request(connfd);
-    //         if (err)
-    //             break;
-    //     }
-    //     // do_something(connfd);
-    //     close(connfd);
-    // }
+   
     while (true)
     {
         poll_args.clear();
