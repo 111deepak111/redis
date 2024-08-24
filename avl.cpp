@@ -1,5 +1,3 @@
-#include <stddef.h>
-#include <stdint.h>
 #include "avl.h"
 
 static uint32_t avl_depth(AVLNode *node)

@@ -8,7 +8,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
-#include <arpa/inet.h>
+#include <arpa/inet.h>  
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <string>
@@ -172,12 +172,16 @@ static void out_nil(std::string &out)
     out.push_back(SER_NIL);
 }
 
+static void out_str(std::string &out,const char* s,size_t size){
+    out.push_back(SER_STR);
+    uint32_t len=(uint32_t)size;
+    out.append((char*)&len,4);
+    out.append(s,len);
+}
+
 static void out_str(std::string &out, const std::string &val)
 {
-    out.push_back(SER_STR);
-    uint32_t len = val.size();
-    out.append((char *)&len, 4);
-    out.append(val);
+    return out_str(out,val.data(),val.size());
 }
 
 static void out_int(std::string &out, int64_t val)
@@ -380,10 +384,8 @@ static void do_zscore(std::vector<std::string>&cmd,std::string &out){
     if(!expect_zset(out,cmd[1],&ent))
         return;
     const std::string &name=cmd[2];
-    ZNode *znode=zset_pop(ent->zset,name.data(),name.size());
-    if(znode)
-        znode_del(znode);
-    return out_int(out,znode?1:0);
+    ZNode *znode=zset_lookup(ent->zset,name.data(),name.size());
+    return znode?out_dbl(out,znode->score):out_nil(out);
 }
 
 static void do_zquery(std::vector<std::string>&cmd,std::string &out){
@@ -412,11 +414,12 @@ static void do_zquery(std::vector<std::string>&cmd,std::string &out){
     void *arr=begin_arr(out);
     uint32_t n=0;
     while(znode&&(int64_t)n<limit){
-        out_str(out,znode->name);
+        out_str(out,znode->name,znode->len);
         out_dbl(out,znode->score);
+        znode=znode_offset(znode,+1);
         n+=2;
     }
-    end_arr(out,arr,2);
+    end_arr(out,arr,n);
 }
 
 static bool cmd_is(const std::string &word, const char *cmd)
@@ -647,3 +650,4 @@ int main()
 
     return 0;
 }
+

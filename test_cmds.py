@@ -1,15 +1,17 @@
+#!/usr/bin/env python3
+
 CASES= r'''
 $ ./client zscore asdf n1
 (nil)
 $ ./client zquery xxx 1 asdf 1 10
 (arr) len=0
-(end)
+(arr) end
 $ ./client zadd zset 1 n1
 (int) 1
 $ ./client zadd zset 2 n2
 (int) 1
 $ ./client zadd zset 1.1 n1
-(int) 1
+(int) 0
 $ ./client zscore zset n1
 (dbl) 1.1
 $ ./client zquery zset 1 "" 0 10
