@@ -12,8 +12,8 @@ struct ZNode
 {
     AVLNode tree;
     HNode hmap;
-    size_t len;
-    double score;
+    size_t len=0;
+    double score=0;
     char name[0];
 };
 
